@@ -55,7 +55,7 @@ def _load_raw(filename: str) -> pd.DataFrame:
 
 
 def load_raw_tables() -> tuple:
-    """Load all six raw ACS CSVs."""
+    """Load all raw ACS CSVs."""
     print("[Clean] Loading raw tables...")
     income      = _load_raw(f"acs_b19001_county_{ACS_YEAR}.csv")
     hh          = _load_raw(f"acs_b11001_county_{ACS_YEAR}.csv")
@@ -63,11 +63,18 @@ def load_raw_tables() -> tuple:
     language    = _load_raw(f"acs_c16002_county_{ACS_YEAR}.csv")
     citizenship = _load_raw(f"acs_b05001_county_{ACS_YEAR}.csv")
     education   = _load_raw(f"acs_b15003_county_{ACS_YEAR}.csv")
+    age         = _load_raw(f"acs_b01001_county_{ACS_YEAR}.csv")
+    internet    = _load_raw(f"acs_b28002_county_{ACS_YEAR}.csv")
+    disability  = _load_raw(f"acs_c18130_county_{ACS_YEAR}.csv")
+    poverty_age = _load_raw(f"acs_b17001_county_{ACS_YEAR}.csv")
+    names       = _load_raw(f"acs_names_county_{ACS_YEAR}.csv")
     print(
         f"  B19001: {len(income):,} | B11001: {len(hh):,} | B22001: {len(snap):,} | "
-        f"C16002: {len(language):,} | B05001: {len(citizenship):,} | B15003: {len(education):,}"
+        f"C16002: {len(language):,} | B05001: {len(citizenship):,} | B15003: {len(education):,} | "
+        f"B01001: {len(age):,} | B28002: {len(internet):,} | C18130: {len(disability):,} | "
+        f"B17001: {len(poverty_age):,} | Names: {len(names):,}"
     )
-    return income, hh, snap, language, citizenship, education
+    return income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names
 
 
 # ---------------------------------------------------------------------------
@@ -83,21 +90,38 @@ def _add_fips(df: pd.DataFrame) -> pd.DataFrame:
 # B15003 education columns for grades 1–12 no diploma (all < HS diploma)
 NO_HS_COLS = [f"B15003_{str(i).zfill(3)}E" for i in range(2, 17)]  # _002E–_016E
 
+# B01001 age columns
+MALE_CHILD_COLS   = [f"B01001_{str(i).zfill(3)}E" for i in [3, 4, 5, 6]]      # M under 18
+MALE_SENIOR_COLS  = [f"B01001_{str(i).zfill(3)}E" for i in [20, 21, 22, 23, 24, 25]]  # M 65+
+FEMALE_CHILD_COLS = [f"B01001_{str(i).zfill(3)}E" for i in [27, 28, 29, 30]]  # F under 18
+FEMALE_SENIOR_COLS = [f"B01001_{str(i).zfill(3)}E" for i in [44, 45, 46, 47, 48, 49]]  # F 65+
+ALL_AGE_COLS = MALE_CHILD_COLS + MALE_SENIOR_COLS + FEMALE_CHILD_COLS + FEMALE_SENIOR_COLS
 
-def merge_tables(income, hh, snap, language, citizenship, education) -> pd.DataFrame:
+
+def merge_tables(income, hh, snap, language, citizenship, education,
+                 age, internet, disability, poverty_age, names) -> pd.DataFrame:
     """
-    Merge all six tables on county_fips. Inner join drops territories and
+    Merge all tables on county_fips. Inner join drops territories and
     counties missing from any table.
     """
     print("[Clean] Merging tables on county_fips...")
-    for df in (income, hh, snap, language, citizenship, education):
-        _add_fips(df)  # modifies copy — we re-assign below
-    income      = _add_fips(income)
-    hh          = _add_fips(hh)
-    snap        = _add_fips(snap)
-    language    = _add_fips(language)
-    citizenship = _add_fips(citizenship)
-    education   = _add_fips(education)
+    tables = (income, hh, snap, language, citizenship, education,
+              age, internet, disability, poverty_age, names)
+    income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names = (
+        _add_fips(t) for t in tables
+    )
+
+    # names table uses NAME + state + county (no extra ACS vars)
+    names_cols = ["county_fips", "NAME"]
+
+    age_cols       = ["county_fips", "B01001_001E"] + ALL_AGE_COLS
+    internet_cols  = ["county_fips", "B28002_001E", "B28002_013E"]
+    disability_cols = ["county_fips", "C18130_001E", "C18130_002E", "C18130_003E",
+                       "C18130_004E", "C18130_009E", "C18130_010E", "C18130_011E",
+                       "C18130_016E", "C18130_017E", "C18130_018E"]
+    poverty_age_cols = ["county_fips", "B17001_001E", "B17001_002E", "B17001_004E",
+                        "B17001_005E", "B17001_011E", "B17001_012E", "B17001_014E",
+                        "B17001_015E", "B17001_021E", "B17001_022E"]
 
     df = (
         income
@@ -119,6 +143,11 @@ def merge_tables(income, hh, snap, language, citizenship, education) -> pd.DataF
             education[["county_fips", "B15003_001E"] + NO_HS_COLS],
             on="county_fips", how="inner"
         )
+        .merge(age[age_cols],              on="county_fips", how="inner")
+        .merge(internet[internet_cols],    on="county_fips", how="inner")
+        .merge(disability[disability_cols], on="county_fips", how="inner")
+        .merge(poverty_age[poverty_age_cols], on="county_fips", how="inner")
+        .merge(names[names_cols],          on="county_fips", how="inner")
     )
     print(f"  → {len(df):,} counties after merge")
     return df
@@ -270,22 +299,95 @@ def compute_stigma_signals(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# New demographic / barrier features
+# ---------------------------------------------------------------------------
+
+def compute_age_shares(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    senior_share = population 65+ / total population (B01001).
+    child_share  = population under 18 / total population (B01001).
+    Both are key demographic modifiers for outreach targeting.
+    """
+    df = df.copy()
+    df["child_pop"]    = df[MALE_CHILD_COLS + FEMALE_CHILD_COLS].sum(axis=1)
+    df["senior_pop"]   = df[MALE_SENIOR_COLS + FEMALE_SENIOR_COLS].sum(axis=1)
+    total_pop          = df["B01001_001E"].replace(0, pd.NA)
+    df["child_share"]  = df["child_pop"] / total_pop
+    df["senior_share"] = df["senior_pop"] / total_pop
+    return df
+
+
+def compute_internet_share(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    no_broadband_share = households with no internet access / total HH (B28002).
+    High values signal a digital access barrier for online applications.
+    """
+    df = df.copy()
+    df["no_broadband_share"] = df["B28002_013E"] / df["B28002_001E"].replace(0, pd.NA)
+    return df
+
+
+def compute_disability_shares(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    disability_share = all ages with disability / total civilian pop (C18130).
+    disability_poverty_share = with disability + below poverty / total civilian pop.
+    """
+    df = df.copy()
+    total = df["C18130_001E"].replace(0, pd.NA)
+    df["disability_pop"]           = df["C18130_003E"] + df["C18130_010E"] + df["C18130_017E"]
+    df["disability_poverty_pop"]   = df["C18130_004E"] + df["C18130_011E"] + df["C18130_018E"]
+    df["disability_share"]         = df["disability_pop"] / total
+    df["disability_poverty_share"] = df["disability_poverty_pop"] / total
+    return df
+
+
+def compute_poverty_rates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    poverty_rate        = total below poverty / universe (B17001).
+    child_poverty_rate  = children (under 18) below poverty / child_pop (B01001).
+    senior_poverty_rate = seniors (65+) below poverty / senior_pop (B01001).
+    """
+    df = df.copy()
+    df["poverty_rate"] = df["B17001_002E"] / df["B17001_001E"].replace(0, pd.NA)
+
+    child_below_poverty = (
+        df["B17001_004E"] + df["B17001_005E"]   # M under 5, M 5-17
+        + df["B17001_014E"] + df["B17001_015E"]  # F under 5, F 5-17
+    )
+    senior_below_poverty = (
+        df["B17001_011E"] + df["B17001_012E"]   # M 65-74, M 75+
+        + df["B17001_021E"] + df["B17001_022E"]  # F 65-74, F 75+
+    )
+    df["child_poverty_rate"]  = child_below_poverty / df["child_pop"].replace(0, pd.NA)
+    df["senior_poverty_rate"] = senior_below_poverty / df["senior_pop"].replace(0, pd.NA)
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Select output columns
 # ---------------------------------------------------------------------------
 
 def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[[
         # Geography
-        "county_fips", "state", "county",
+        "county_fips", "state", "county", "county_name",
         # Core counts
         "total_hh", "eligible_hh", "enrolled_hh",
         # Gap metrics
         "gap_hh", "gap_rate",
         # Barrier signals
-        "lep_hh",    "lep_share",          # language
-        "noncitizen_share",                # documentation
-        "no_hs_share",                     # awareness (education component)
-        "high_income_share", "poverty_share",  # stigma
+        "lep_hh",    "lep_share",                  # language
+        "noncitizen_share",                         # documentation
+        "no_hs_share",                              # awareness (education component)
+        "high_income_share", "poverty_share",       # stigma
+        # Demographics
+        "child_share", "senior_share",
+        # Digital access
+        "no_broadband_share",
+        # Disability
+        "disability_share", "disability_poverty_share",
+        # Poverty rates
+        "poverty_rate", "child_poverty_rate", "senior_poverty_rate",
     ]]
 
 
@@ -294,10 +396,10 @@ def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def run_all() -> pd.DataFrame:
-    income, hh, snap, language, citizenship, education = load_raw_tables()
-    df = merge_tables(income, hh, snap, language, citizenship, education)
+    income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names = load_raw_tables()
+    df = merge_tables(income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names)
     df = cast_numeric(df)
-    df = df.rename(columns={"B19001_001E": "total_hh"})
+    df = df.rename(columns={"B19001_001E": "total_hh", "NAME": "county_name"})
 
     df = estimate_eligible_households(df)
     df = extract_enrollment(df)
@@ -306,6 +408,10 @@ def run_all() -> pd.DataFrame:
     df = compute_noncitizen_share(df)
     df = compute_awareness_signals(df)
     df = compute_stigma_signals(df)
+    df = compute_age_shares(df)
+    df = compute_internet_share(df)
+    df = compute_disability_shares(df)
+    df = compute_poverty_rates(df)
     df = select_output_columns(df)
 
     print(f"\n[Clean] Summary:")

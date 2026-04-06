@@ -2,12 +2,19 @@
 ingest.py — Raw data ingestion for the Eligibility Gap AI pipeline.
 
 Pulls all data from the US Census Bureau ACS 5-Year API and saves raw CSVs
-to data/raw/. Four tables are fetched for all US counties:
+to data/raw/. Ten tables are fetched for all US counties:
 
   B19001 — Household income brackets (SNAP eligibility proxy)
   B11001 — Household type (household count denominator)
   B22001 — SNAP/food stamp receipt (actual enrollment at county level)
-  B16004 — Language spoken at home + English ability (LEP barrier signal)
+  C16002 — Household LEP status (language barrier signal)
+  B05001 — Citizenship status (documentation barrier signal)
+  B15003 — Educational attainment (awareness barrier signal)
+  B01001 — Age by sex (senior_share, child_share demographics)
+  B28002 — Internet access (no_broadband_share — digital barrier signal)
+  C18130 — Age by disability by poverty status (disability signals)
+  B17001 — Poverty by sex by age (poverty_rate, child/senior poverty rates)
+  NAME   — County display name (baked into pipeline output)
 
 Why Census-only for v1:
   The USDA FNS website (fns.usda.gov) blocks all programmatic access via CDN
@@ -145,13 +152,86 @@ EDUCATION_VARS = (
     "B15003_016E"   # 12th grade, no diploma
 )
 
-# Map each ACS table to its variable string and output filename
-ACS_TABLES = [
-    ("B19001", INCOME_VARS,       f"acs_b19001_county_{ACS_YEAR}.csv"),
-    ("B11001", HOUSEHOLD_VARS,    f"acs_b11001_county_{ACS_YEAR}.csv"),
-    ("B22001", SNAP_RECEIPT_VARS, f"acs_b22001_county_{ACS_YEAR}.csv"),
-    ("B16004", LANGUAGE_VARS,     f"acs_b16004_county_{ACS_YEAR}.csv"),
-]
+# B01001: Sex by Age
+#   Used to derive senior_share (65+) and child_share (under 18) per county.
+#   These demographic signals sharpen outreach targeting for disability/poverty.
+#   Male: _003E (under 5), _004E (5-9), _005E (10-14), _006E (15-17)
+#         _020E (65-66), _021E (67-69), _022E (70-74), _023E (75-79), _024E (80-84), _025E (85+)
+#   Female: _027E (under 5), _028E (5-9), _029E (10-14), _030E (15-17)
+#           _044E (65-66), _045E (67-69), _046E (70-74), _047E (75-79), _048E (80-84), _049E (85+)
+AGE_VARS = (
+    "B01001_001E,"  # total population
+    # Male under 18
+    "B01001_003E,"  # M under 5
+    "B01001_004E,"  # M 5-9
+    "B01001_005E,"  # M 10-14
+    "B01001_006E,"  # M 15-17
+    # Male 65+
+    "B01001_020E,"  # M 65-66
+    "B01001_021E,"  # M 67-69
+    "B01001_022E,"  # M 70-74
+    "B01001_023E,"  # M 75-79
+    "B01001_024E,"  # M 80-84
+    "B01001_025E,"  # M 85+
+    # Female under 18
+    "B01001_027E,"  # F under 5
+    "B01001_028E,"  # F 5-9
+    "B01001_029E,"  # F 10-14
+    "B01001_030E,"  # F 15-17
+    # Female 65+
+    "B01001_044E,"  # F 65-66
+    "B01001_045E,"  # F 67-69
+    "B01001_046E,"  # F 70-74
+    "B01001_047E,"  # F 75-79
+    "B01001_048E,"  # F 80-84
+    "B01001_049E"   # F 85+
+)
+
+# B28002: Presence and Types of Internet Subscriptions in Household
+#   _001E = total households
+#   _013E = no internet access at all
+#   no_broadband_share signals a digital access barrier for online applications.
+INTERNET_VARS = (
+    "B28002_001E,"  # total households
+    "B28002_013E"   # no internet access
+)
+
+# C18130: Age by Disability Status by Poverty Status
+#   Civilian noninstitutionalized population. Used to derive disability_share
+#   and disability_poverty_share — populations with both barriers simultaneously.
+#   Under 18: _002E (total), _003E (with disability), _004E (disability + below poverty)
+#   18 to 64: _009E (total), _010E (with disability), _011E (disability + below poverty)
+#   65+:      _016E (total), _017E (with disability), _018E (disability + below poverty)
+DISABILITY_VARS = (
+    "C18130_001E,"  # total
+    "C18130_002E,"  # under 18 total
+    "C18130_003E,"  # under 18, with disability
+    "C18130_004E,"  # under 18, disability + below poverty
+    "C18130_009E,"  # 18-64 total
+    "C18130_010E,"  # 18-64, with disability
+    "C18130_011E,"  # 18-64, disability + below poverty
+    "C18130_016E,"  # 65+ total
+    "C18130_017E,"  # 65+, with disability
+    "C18130_018E"   # 65+, disability + below poverty
+)
+
+# B17001: Poverty Status in the Past 12 Months by Sex by Age
+#   _001E = universe (total for whom poverty is determined)
+#   _002E = total below poverty
+#   Children below poverty: _004E (M<5) + _005E (M 5-17) + _014E (F<5) + _015E (F 5-17)
+#   Seniors below poverty:  _011E (M 65-74) + _012E (M 75+) + _021E (F 65-74) + _022E (F 75+)
+POVERTY_AGE_VARS = (
+    "B17001_001E,"  # total universe
+    "B17001_002E,"  # total below poverty
+    "B17001_004E,"  # M under 5, below poverty
+    "B17001_005E,"  # M 5-17, below poverty
+    "B17001_011E,"  # M 65-74, below poverty
+    "B17001_012E,"  # M 75+, below poverty
+    "B17001_014E,"  # F under 5, below poverty
+    "B17001_015E,"  # F 5-17, below poverty
+    "B17001_021E,"  # F 65-74, below poverty
+    "B17001_022E"   # F 75+, below poverty
+)
 
 # ---------------------------------------------------------------------------
 # Census API helper
@@ -239,13 +319,59 @@ def fetch_acs_education(api_key: str) -> pd.DataFrame:
     return df
 
 
+def fetch_acs_age(api_key: str) -> pd.DataFrame:
+    """Pull B01001 (sex by age) for all US counties."""
+    print(f"[Census] Fetching B01001 (age by sex) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, AGE_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_acs_internet(api_key: str) -> pd.DataFrame:
+    """Pull B28002 (internet access) for all US counties."""
+    print(f"[Census] Fetching B28002 (internet access) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, INTERNET_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_acs_disability(api_key: str) -> pd.DataFrame:
+    """Pull C18130 (age by disability by poverty) for all US counties."""
+    print(f"[Census] Fetching C18130 (disability × poverty) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, DISABILITY_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_acs_poverty_age(api_key: str) -> pd.DataFrame:
+    """Pull B17001 (poverty by sex by age) for all US counties."""
+    print(f"[Census] Fetching B17001 (poverty by age) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, POVERTY_AGE_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_county_names(api_key: str) -> pd.DataFrame:
+    """
+    Fetch the NAME variable for all US counties.
+
+    Returns a DataFrame with columns [NAME, state, county] where NAME is a
+    human-readable string like "Autauga County, Alabama". Baking this into
+    the pipeline avoids a runtime API call from the dashboard.
+    """
+    print(f"[Census] Fetching county names (NAME) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, "NAME", "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Save all tables
 # ---------------------------------------------------------------------------
 
 def save_acs_raw(api_key: str) -> None:
     """
-    Fetch all six ACS tables and save raw CSVs to data/raw/.
+    Fetch all ACS tables and save raw CSVs to data/raw/.
 
     Output files:
       acs_b19001_county_2023.csv  — income brackets (eligibility proxy)
@@ -254,6 +380,11 @@ def save_acs_raw(api_key: str) -> None:
       acs_c16002_county_2023.csv  — household LEP status (language barrier)
       acs_b05001_county_2023.csv  — citizenship status (documentation barrier)
       acs_b15003_county_2023.csv  — educational attainment (awareness barrier)
+      acs_b01001_county_2023.csv  — age by sex (senior/child demographics)
+      acs_b28002_county_2023.csv  — internet access (digital barrier)
+      acs_c18130_county_2023.csv  — disability × poverty
+      acs_b17001_county_2023.csv  — poverty by age (child/senior poverty rates)
+      acs_names_county_2023.csv   — county display names (baked in)
     """
     fetchers = [
         (fetch_acs_income,       f"acs_b19001_county_{ACS_YEAR}.csv"),
@@ -262,6 +393,11 @@ def save_acs_raw(api_key: str) -> None:
         (fetch_acs_language,     f"acs_c16002_county_{ACS_YEAR}.csv"),
         (fetch_acs_citizenship,  f"acs_b05001_county_{ACS_YEAR}.csv"),
         (fetch_acs_education,    f"acs_b15003_county_{ACS_YEAR}.csv"),
+        (fetch_acs_age,          f"acs_b01001_county_{ACS_YEAR}.csv"),
+        (fetch_acs_internet,     f"acs_b28002_county_{ACS_YEAR}.csv"),
+        (fetch_acs_disability,   f"acs_c18130_county_{ACS_YEAR}.csv"),
+        (fetch_acs_poverty_age,  f"acs_b17001_county_{ACS_YEAR}.csv"),
+        (fetch_county_names,     f"acs_names_county_{ACS_YEAR}.csv"),
     ]
     for i, (fetcher, filename) in enumerate(fetchers):
         path = RAW_DIR / filename
