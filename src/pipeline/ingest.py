@@ -233,6 +233,29 @@ POVERTY_AGE_VARS = (
     "B17001_022E"   # F 75+, below poverty
 )
 
+# C17002: Ratio of Income to Poverty Level in the Past 12 Months
+#   Person-level poverty ratio distribution used to estimate households at ≤130% FPL
+#   (the SNAP gross income limit), replacing the cruder B19001 income-bracket approach.
+#   130% FPL falls within the 1.25–1.49 band (_005E); we interpolate to 21% of that band.
+#   _001E = total persons (universe)
+#   _002E = under .50 (deep poverty)
+#   _003E = .50 to .99
+#   _004E = 1.00 to 1.24
+#   _005E = 1.25 to 1.49  ← SNAP cutoff (130% FPL) is 21% into this band
+POVERTY_RATIO_VARS = (
+    "C17002_001E,"  # total
+    "C17002_002E,"  # under .50
+    "C17002_003E,"  # .50 to .99
+    "C17002_004E,"  # 1.00 to 1.24
+    "C17002_005E"   # 1.25 to 1.49
+)
+
+# B19083: Gini Index of Income Inequality
+#   Direct measure of income inequality within a county (0 = perfect equality, 1 = maximum).
+#   Replaces the cruder high_income_share proxy for the stigma barrier signal.
+#   High Gini + low enrollment = structural inequality suppressing benefit access.
+GINI_VARS = "B19083_001E"
+
 # ---------------------------------------------------------------------------
 # Census API helper
 # ---------------------------------------------------------------------------
@@ -319,6 +342,56 @@ def fetch_acs_education(api_key: str) -> pd.DataFrame:
     return df
 
 
+def fetch_acs_poverty_ratio(api_key: str) -> pd.DataFrame:
+    """Pull C17002 (ratio of income to poverty level) for all US counties."""
+    print(f"[Census] Fetching C17002 (poverty ratio) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, POVERTY_RATIO_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_acs_gini(api_key: str) -> pd.DataFrame:
+    """Pull B19083 (Gini index of income inequality) for all US counties."""
+    print(f"[Census] Fetching B19083 (Gini index) — {ACS_YEAR} ACS 5-Year...")
+    df = _census_get(ACS_DATASET, ACS_YEAR, GINI_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_county_area(api_key: str) -> pd.DataFrame:
+    """
+    Fetch county land area (ALAND, sq meters) from the 2020 Decennial Census PL file.
+
+    Land area is a fixed geographic attribute — 2020 values are current for our purposes.
+    Used to compute population density, the direct rurality signal for the awareness barrier.
+    """
+    print("[Census] Fetching county land area (ALAND) — 2020 Decennial Census...")
+    url = f"{CENSUS_BASE}/2020/dec/pl"
+    params = {"get": "ALAND", "for": "county:*", "key": api_key}
+    resp = requests.get(url, params=params, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Census API error {resp.status_code} for {url}\nBody: {resp.text[:500]}"
+        )
+    data = resp.json()
+    df = pd.DataFrame(data[1:], columns=data[0])
+    print(f"  → {len(df):,} counties")
+    return df
+
+
+def fetch_acs_snap_prior(api_key: str) -> pd.DataFrame:
+    """
+    Pull B22001 (SNAP receipt) for the prior ACS year (2022) to compute enrollment trend.
+
+    Comparing 2022 → 2023 enrollment reveals whether a county's gap is growing or shrinking,
+    which modifies priority score: counties moving in the wrong direction rank higher.
+    """
+    print(f"[Census] Fetching B22001 (SNAP receipt) — 2022 ACS 5-Year (prior year)...")
+    df = _census_get(ACS_DATASET, 2022, SNAP_RECEIPT_VARS, "county:*", api_key)
+    print(f"  → {len(df):,} counties")
+    return df
+
+
 def fetch_acs_age(api_key: str) -> pd.DataFrame:
     """Pull B01001 (sex by age) for all US counties."""
     print(f"[Census] Fetching B01001 (age by sex) — {ACS_YEAR} ACS 5-Year...")
@@ -398,6 +471,9 @@ def save_acs_raw(api_key: str) -> None:
         (fetch_acs_disability,   f"acs_c18130_county_{ACS_YEAR}.csv"),
         (fetch_acs_poverty_age,  f"acs_b17001_county_{ACS_YEAR}.csv"),
         (fetch_county_names,     f"acs_names_county_{ACS_YEAR}.csv"),
+        (fetch_acs_poverty_ratio, f"acs_c17002_county_{ACS_YEAR}.csv"),
+        (fetch_acs_gini,          f"acs_b19083_county_{ACS_YEAR}.csv"),
+        (fetch_acs_snap_prior,    "acs_b22001_county_2022.csv"),
     ]
     for i, (fetcher, filename) in enumerate(fetchers):
         path = RAW_DIR / filename

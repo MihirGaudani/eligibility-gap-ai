@@ -75,16 +75,28 @@ def load_barrier_results() -> pd.DataFrame:
 # Priority score
 # ---------------------------------------------------------------------------
 
+# Trend boost: counties where enrollment is worsening (gap growing) receive
+# a small priority boost — same gap severity but more urgent given trajectory.
+TREND_BOOST = {"worsening": 3.0, "stable": 0.0, "improving": 0.0, "unknown": 0.0}
+
+
 def compute_priority_score(df: pd.DataFrame) -> pd.DataFrame:
     """
-    priority_score = gap_score × barrier_weight[top_barrier], capped at 100.
+    priority_score = (gap_score × barrier_weight) + trend_boost, capped at 100.
 
-    The cap prevents language-barrier counties from exceeding the 0–100 scale
-    (gap_score of 84 × 1.2 = 100.8 → capped at 100).
+    trend_boost adds 3 points for counties where enrollment declined ≥5% vs prior year
+    — same gap severity but deteriorating trajectory warrants higher urgency.
     """
     df = df.copy()
-    df["barrier_weight"]   = df["top_barrier"].map(BARRIER_WEIGHTS)
-    df["priority_score"]   = (df["gap_score"] * df["barrier_weight"]).clip(upper=100).round(2)
+    df["barrier_weight"] = df["top_barrier"].map(BARRIER_WEIGHTS)
+    base_score = df["gap_score"] * df["barrier_weight"]
+
+    if "gap_trend" in df.columns:
+        boost = df["gap_trend"].map(TREND_BOOST).fillna(0)
+    else:
+        boost = 0
+
+    df["priority_score"] = (base_score + boost).clip(upper=100).round(2)
     return df
 
 

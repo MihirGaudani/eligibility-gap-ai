@@ -57,24 +57,29 @@ def _load_raw(filename: str) -> pd.DataFrame:
 def load_raw_tables() -> tuple:
     """Load all raw ACS CSVs."""
     print("[Clean] Loading raw tables...")
-    income      = _load_raw(f"acs_b19001_county_{ACS_YEAR}.csv")
-    hh          = _load_raw(f"acs_b11001_county_{ACS_YEAR}.csv")
-    snap        = _load_raw(f"acs_b22001_county_{ACS_YEAR}.csv")
-    language    = _load_raw(f"acs_c16002_county_{ACS_YEAR}.csv")
-    citizenship = _load_raw(f"acs_b05001_county_{ACS_YEAR}.csv")
-    education   = _load_raw(f"acs_b15003_county_{ACS_YEAR}.csv")
-    age         = _load_raw(f"acs_b01001_county_{ACS_YEAR}.csv")
-    internet    = _load_raw(f"acs_b28002_county_{ACS_YEAR}.csv")
-    disability  = _load_raw(f"acs_c18130_county_{ACS_YEAR}.csv")
-    poverty_age = _load_raw(f"acs_b17001_county_{ACS_YEAR}.csv")
-    names       = _load_raw(f"acs_names_county_{ACS_YEAR}.csv")
+    income        = _load_raw(f"acs_b19001_county_{ACS_YEAR}.csv")
+    hh            = _load_raw(f"acs_b11001_county_{ACS_YEAR}.csv")
+    snap          = _load_raw(f"acs_b22001_county_{ACS_YEAR}.csv")
+    language      = _load_raw(f"acs_c16002_county_{ACS_YEAR}.csv")
+    citizenship   = _load_raw(f"acs_b05001_county_{ACS_YEAR}.csv")
+    education     = _load_raw(f"acs_b15003_county_{ACS_YEAR}.csv")
+    age           = _load_raw(f"acs_b01001_county_{ACS_YEAR}.csv")
+    internet      = _load_raw(f"acs_b28002_county_{ACS_YEAR}.csv")
+    disability    = _load_raw(f"acs_c18130_county_{ACS_YEAR}.csv")
+    poverty_age   = _load_raw(f"acs_b17001_county_{ACS_YEAR}.csv")
+    names         = _load_raw(f"acs_names_county_{ACS_YEAR}.csv")
+    poverty_ratio = _load_raw(f"acs_c17002_county_{ACS_YEAR}.csv")
+    gini          = _load_raw(f"acs_b19083_county_{ACS_YEAR}.csv")
+    snap_prior    = _load_raw("acs_b22001_county_2022.csv")
     print(
         f"  B19001: {len(income):,} | B11001: {len(hh):,} | B22001: {len(snap):,} | "
         f"C16002: {len(language):,} | B05001: {len(citizenship):,} | B15003: {len(education):,} | "
         f"B01001: {len(age):,} | B28002: {len(internet):,} | C18130: {len(disability):,} | "
-        f"B17001: {len(poverty_age):,} | Names: {len(names):,}"
+        f"B17001: {len(poverty_age):,} | C17002: {len(poverty_ratio):,} | "
+        f"B19083: {len(gini):,} | B22001-2022: {len(snap_prior):,}"
     )
-    return income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names
+    return (income, hh, snap, language, citizenship, education, age, internet,
+            disability, poverty_age, names, poverty_ratio, gini, snap_prior)
 
 
 # ---------------------------------------------------------------------------
@@ -99,29 +104,39 @@ ALL_AGE_COLS = MALE_CHILD_COLS + MALE_SENIOR_COLS + FEMALE_CHILD_COLS + FEMALE_S
 
 
 def merge_tables(income, hh, snap, language, citizenship, education,
-                 age, internet, disability, poverty_age, names) -> pd.DataFrame:
+                 age, internet, disability, poverty_age, names,
+                 poverty_ratio, gini, snap_prior) -> pd.DataFrame:
     """
-    Merge all tables on county_fips. Inner join drops territories and
-    counties missing from any table.
+    Merge all tables on county_fips. Inner join on core tables; left join for
+    snap_prior (2022) to retain all 3,222 counties even if prior-year data gaps exist.
     """
     print("[Clean] Merging tables on county_fips...")
-    tables = (income, hh, snap, language, citizenship, education,
-              age, internet, disability, poverty_age, names)
-    income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names = (
-        _add_fips(t) for t in tables
-    )
+    core_tables = (income, hh, snap, language, citizenship, education,
+                   age, internet, disability, poverty_age, names,
+                   poverty_ratio, gini)
+    (income, hh, snap, language, citizenship, education, age, internet,
+     disability, poverty_age, names, poverty_ratio, gini) = (_add_fips(t) for t in core_tables)
 
-    # names table uses NAME + state + county (no extra ACS vars)
-    names_cols = ["county_fips", "NAME"]
+    # snap_prior uses left join — some counties may be absent in 2022 ACS
+    snap_prior = _add_fips(snap_prior)
 
-    age_cols       = ["county_fips", "B01001_001E"] + ALL_AGE_COLS
-    internet_cols  = ["county_fips", "B28002_001E", "B28002_013E"]
-    disability_cols = ["county_fips", "C18130_001E", "C18130_002E", "C18130_003E",
-                       "C18130_004E", "C18130_009E", "C18130_010E", "C18130_011E",
-                       "C18130_016E", "C18130_017E", "C18130_018E"]
+    # Rename prior-year SNAP columns to avoid collision with 2023 columns
+    snap_prior = snap_prior.rename(columns={
+        "B22001_001E": "B22001_001E_2022",
+        "B22001_002E": "B22001_002E_2022",
+        "B22001_003E": "B22001_003E_2022",
+    })
+
+    age_cols         = ["county_fips", "B01001_001E"] + ALL_AGE_COLS
+    internet_cols    = ["county_fips", "B28002_001E", "B28002_013E"]
+    disability_cols  = ["county_fips", "C18130_001E", "C18130_002E", "C18130_003E",
+                        "C18130_004E", "C18130_009E", "C18130_010E", "C18130_011E",
+                        "C18130_016E", "C18130_017E", "C18130_018E"]
     poverty_age_cols = ["county_fips", "B17001_001E", "B17001_002E", "B17001_004E",
                         "B17001_005E", "B17001_011E", "B17001_012E", "B17001_014E",
                         "B17001_015E", "B17001_021E", "B17001_022E"]
+    poverty_ratio_cols = ["county_fips", "C17002_001E", "C17002_002E",
+                          "C17002_003E", "C17002_004E", "C17002_005E"]
 
     df = (
         income
@@ -143,11 +158,17 @@ def merge_tables(income, hh, snap, language, citizenship, education,
             education[["county_fips", "B15003_001E"] + NO_HS_COLS],
             on="county_fips", how="inner"
         )
-        .merge(age[age_cols],              on="county_fips", how="inner")
-        .merge(internet[internet_cols],    on="county_fips", how="inner")
-        .merge(disability[disability_cols], on="county_fips", how="inner")
-        .merge(poverty_age[poverty_age_cols], on="county_fips", how="inner")
-        .merge(names[names_cols],          on="county_fips", how="inner")
+        .merge(age[age_cols],                    on="county_fips", how="inner")
+        .merge(internet[internet_cols],          on="county_fips", how="inner")
+        .merge(disability[disability_cols],      on="county_fips", how="inner")
+        .merge(poverty_age[poverty_age_cols],    on="county_fips", how="inner")
+        .merge(names[["county_fips", "NAME"]],   on="county_fips", how="inner")
+        .merge(poverty_ratio[poverty_ratio_cols], on="county_fips", how="inner")
+        .merge(gini[["county_fips", "B19083_001E"]], on="county_fips", how="inner")
+        .merge(
+            snap_prior[["county_fips", "B22001_002E_2022"]],
+            on="county_fips", how="left"
+        )
     )
     print(f"  → {len(df):,} counties after merge")
     return df
@@ -171,26 +192,35 @@ def cast_numeric(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Eligibility estimate (B19001)
+# Eligibility estimate (C17002 — replaces B19001 income-bracket proxy)
 # ---------------------------------------------------------------------------
 
-FULLY_ELIGIBLE_BRACKETS = [
-    "B19001_002E",  # < $10,000
-    "B19001_003E",  # $10,000–$14,999
-    "B19001_004E",  # $15,000–$19,999
-    "B19001_005E",  # $20,000–$24,999
-    "B19001_006E",  # $25,000–$29,999
-]
-PARTIAL_BRACKET = "B19001_007E"  # $30,000–$34,999
-PARTIAL_WEIGHT  = 0.5
+# SNAP gross income limit = 130% FPL. C17002_005E spans 1.25–1.49 (width 0.24).
+# 130% FPL is (1.30 - 1.25) / (1.49 - 1.25) = 20.8% into that band.
+FRAC_130FPL = (1.30 - 1.25) / (1.49 - 1.25)  # 0.208
 
 
 def estimate_eligible_households(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Estimate SNAP-eligible households using C17002 poverty ratio distribution.
+
+    Method: compute the fraction of persons at or below 130% FPL, then apply
+    that fraction to total households. Substantially more accurate than the
+    B19001 income-bracket approach because:
+      1. Uses the actual 130% FPL threshold, not a $30-35k income bracket proxy
+      2. Accounts for household-size variation (FPL is size-adjusted)
+      3. Same Census source and vintage — no additional assumptions needed
+    """
     df = df.copy()
-    df["eligible_hh"] = (
-        df[FULLY_ELIGIBLE_BRACKETS].sum(axis=1)
-        + df[PARTIAL_BRACKET] * PARTIAL_WEIGHT
+    total_persons = df["C17002_001E"].replace(0, pd.NA)
+    at_130fpl = (
+        df["C17002_002E"]
+        + df["C17002_003E"]
+        + df["C17002_004E"]
+        + df["C17002_005E"] * FRAC_130FPL
     )
+    eligible_rate    = (at_130fpl / total_persons).clip(upper=1.0)
+    df["eligible_hh"] = (df["total_hh"] * eligible_rate).round(1)
     return df
 
 
@@ -364,6 +394,66 @@ def compute_poverty_rates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# New model features
+# ---------------------------------------------------------------------------
+
+def compute_total_pop(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expose total_pop (B01001_001E) as a named column.
+
+    Used as the rurality proxy in the awareness barrier score — a genuine improvement
+    over total_hh because population directly measures county size without confounding
+    it with household composition (large families in rural areas, small households in cities).
+    """
+    df = df.copy()
+    df["total_pop"] = df["B01001_001E"]
+    return df
+
+
+def compute_gini(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    gini = Gini index of income inequality (B19083, 0–1).
+    Replaces high_income_share as the primary stigma signal: directly measures
+    structural inequality rather than inferring it from income bracket counts.
+    """
+    df = df.copy()
+    df["gini"] = df["B19083_001E"]
+    return df
+
+
+def compute_enrollment_trend(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compare 2022 → 2023 SNAP enrollment to determine trend direction.
+
+    enrollment_change = enrolled_hh_2023 - enrolled_hh_2022 (households)
+    enrollment_rate_change = change / enrolled_hh_2022
+
+    gap_trend label:
+      worsening — enrollment fell ≥5% (gap is growing, higher urgency)
+      stable    — change within ±5%
+      improving — enrollment rose ≥5% (gap is shrinking)
+      unknown   — 2022 data missing for this county
+    """
+    df = df.copy()
+    prior = pd.to_numeric(df["B22001_002E_2022"], errors="coerce").replace(-666666666, pd.NA)
+    df["enrolled_hh_2022"]       = prior
+    df["enrollment_change"]      = df["enrolled_hh"] - prior
+    df["enrollment_rate_change"] = df["enrollment_change"] / prior.replace(0, pd.NA)
+
+    def _trend_label(rate):
+        if pd.isna(rate):
+            return "unknown"
+        if rate <= -0.05:
+            return "worsening"
+        if rate >= 0.05:
+            return "improving"
+        return "stable"
+
+    df["gap_trend"] = df["enrollment_rate_change"].apply(_trend_label)
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Select output columns
 # ---------------------------------------------------------------------------
 
@@ -379,7 +469,9 @@ def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
         "lep_hh",    "lep_share",                  # language
         "noncitizen_share",                         # documentation
         "no_hs_share",                              # awareness (education component)
-        "high_income_share", "poverty_share",       # stigma
+        "total_pop",                                # awareness (rurality proxy)
+        "gini",                                     # stigma (inequality signal)
+        "high_income_share", "poverty_share",       # stigma (retained for reference)
         # Demographics
         "child_share", "senior_share",
         # Digital access
@@ -388,6 +480,8 @@ def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
         "disability_share", "disability_poverty_share",
         # Poverty rates
         "poverty_rate", "child_poverty_rate", "senior_poverty_rate",
+        # Enrollment trend
+        "enrollment_change", "gap_trend",
     ]]
 
 
@@ -396,8 +490,10 @@ def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def run_all() -> pd.DataFrame:
-    income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names = load_raw_tables()
-    df = merge_tables(income, hh, snap, language, citizenship, education, age, internet, disability, poverty_age, names)
+    (income, hh, snap, language, citizenship, education, age, internet,
+     disability, poverty_age, names, poverty_ratio, gini, snap_prior) = load_raw_tables()
+    df = merge_tables(income, hh, snap, language, citizenship, education, age, internet,
+                      disability, poverty_age, names, poverty_ratio, gini, snap_prior)
     df = cast_numeric(df)
     df = df.rename(columns={"B19001_001E": "total_hh", "NAME": "county_name"})
 
@@ -412,6 +508,9 @@ def run_all() -> pd.DataFrame:
     df = compute_internet_share(df)
     df = compute_disability_shares(df)
     df = compute_poverty_rates(df)
+    df = compute_total_pop(df)
+    df = compute_gini(df)
+    df = compute_enrollment_trend(df)
     df = select_output_columns(df)
 
     print(f"\n[Clean] Summary:")

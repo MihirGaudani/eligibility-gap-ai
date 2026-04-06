@@ -95,17 +95,22 @@ def compute_raw_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # Rurality: smaller county = more rural = higher awareness barrier
-    rural_pct = 100 - _pct_rank(df["total_hh"])
+    # Rurality: smaller total population = more rural = higher awareness barrier.
+    # total_pop replaces total_hh — population directly measures county size without
+    # confounding it with household composition (large families skew hh counts).
+    rural_pct = 100 - _pct_rank(df["total_pop"])
 
-    # Stigma: 'historically low SNAP despite high poverty'
+    # Stigma: Gini coefficient replaces high_income_share as the inequality signal.
+    # Gini directly measures income distribution within the county; high Gini combined
+    # with low enrollment captures structural inequality suppressing benefit access more
+    # precisely than the share of high-income households.
     low_participation = df["gap_rate"] * df["poverty_share"]
 
     df["_raw_language"]      = _pct_rank(df["lep_share"])
     df["_raw_documentation"] = _pct_rank(df["noncitizen_share"])
     df["_raw_awareness"]     = 0.5 * _pct_rank(df["no_hs_share"]) + 0.5 * rural_pct
     df["_raw_stigma"]        = (
-        0.5 * _pct_rank(df["high_income_share"])
+        0.5 * _pct_rank(df["gini"])
         + 0.5 * _pct_rank(low_participation)
     )
     return df
